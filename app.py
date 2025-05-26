@@ -46,7 +46,6 @@ with col1:
             )
             max_products_dict[group_name] = max_products
 
-            # Remove equipment name input, use default naming convention
             equipment = {}
             for j in range(int(num_eq)):
                 eq_name = f"{group_name}_EQ_{j+1}" if group_name else f"EQ_{j+1}"
@@ -55,6 +54,10 @@ with col1:
 
             if group_name:
                 st.session_state.station_groups[group_name] = equipment
+
+    # Save conveyor_flags and max_products_dict in session_state for later use
+    st.session_state.conveyor_flags = conveyor_flags
+    st.session_state.max_products_dict = max_products_dict
 
 # === Step 2: Connections ===
 with col2:
@@ -83,14 +86,7 @@ if st.button("▶️ Run Simulation"):
     st.session_state.simulate = True
     st.session_state.sim_time = sim_time
 
-# === Run Simulation ===
-if st.session_state.get("simulate"):
-    station_groups = st.session_state.station_groups
-    from_stations = st.session_state.from_stations
-    connections = st.session_state.connections
-    sim_time = st.session_state.sim_time
-    valid_groups = {g: eqs for g, eqs in station_groups.items() if g}
-
+# === Factory Simulation Class ===
 class FactorySimulation:
     def __init__(self, env, station_groups, duration, connections, from_stations, conveyor_flags, max_products_dict):
         self.env = env
@@ -101,13 +97,11 @@ class FactorySimulation:
         self.conveyor_flags = conveyor_flags
         self.max_products_dict = max_products_dict
 
-        # Create buffers with capacity = max_products for each group
         self.buffers = {
             group: simpy.Store(env, capacity=max_products_dict.get(group, 1000000))
             for group in station_groups
         }
 
-        # Resources for each equipment, capacity=1
         self.resources = {eq: simpy.Resource(env, capacity=1)
                           for group in station_groups.values() for eq in group}
         self.cycle_times = {eq: ct for group in station_groups.values() for eq, ct in group.items()}
@@ -130,20 +124,8 @@ class FactorySimulation:
         cycle_time = self.cycle_times[eq]
 
         while True:
-            # For conveyor, pull immediately if available (don't wait if no board)
-            if is_conveyor:
-                if len(self.buffers[group].items) == 0:
-                    # Wait until at least one board available
-                    yield self.buffers[group].get()  # Get blocks until available
-                    # Immediately put it back because we only want to check availability here
-                    # This is a trick: get and put back to wait for availability without removing
-                    yield self.env.timeout(0)
-                    continue
-                else:
-                    board = yield self.buffers[group].get()
-            else:
-                # Non-conveyor equipment waits normally for board
-                board = yield self.buffers[group].get()
+            # Wait for board availability
+            board = yield self.buffers[group].get()
 
             self.throughput_in[eq] += 1
 
@@ -179,7 +161,6 @@ class FactorySimulation:
         while self.env.now < self.duration:
             self.time_points.append(self.env.now)
             for group in self.station_groups:
-                # WIP = current number of boards in buffer (waiting + processing)
                 wip = len(self.buffers[group].items)
                 self.wip_over_time[group].append(wip)
             yield self.env.timeout(self.wip_interval)
@@ -190,44 +171,65 @@ class FactorySimulation:
                 self.env.process(self.equipment_worker(eq))
         self.env.process(self.feeder())
 
-# === Check for Required Variables ===
-if 'valid_groups' not in locals() or 'sim' not in locals() or 'from_stations' not in locals() or 'sim_time' not in locals():
-    st.warning("❗ Run the simulation first to generate results.")
-    st.stop()
 
-# === Results Summary ===
-st.markdown("---")
-st.subheader("📊 Simulation Results Summary")
-groups = list(valid_groups.keys())
-agg = defaultdict(lambda: {'in': 0, 'out': 0, 'busy': 0, 'count': 0, 'cycle_times': [], 'wip': 0})
+# === Run Simulation and Display Results ===
+if st.session_state.get("simulate"):
+    station_groups = st.session_state.station_groups
+    from_stations = st.session_state.from_stations
+    connections = st.session_state.connections
+    sim_time = st.session_state.sim_time
+    conveyor_flags = st.session_state.conveyor_flags
+    max_products_dict = st.session_state.max_products_dict
 
-for group in groups:
-    eqs = valid_groups[group]
-    for eq in eqs:
-        agg[group]['in'] += sim.throughput_in.get(eq, 0)
-        agg[group]['out'] += sim.throughput_out.get(eq, 0)
-        agg[group]['busy'] += sim.equipment_busy_time.get(eq, 0)
-        agg[group]['cycle_times'].append(sim.cycle_times.get(eq, 0))
-        agg[group]['count'] += 1
-    prev_out = sum(sim.throughput_out.get(eq, 0) for g in from_stations.get(group, []) for eq in valid_groups.get(g, []))
-    curr_in = agg[group]['in']
-    agg[group]['wip'] = max(0, prev_out - curr_in)
+    valid_groups = {g: eqs for g, eqs in station_groups.items() if g}
 
-# Prepare DataFrame
-df = pd.DataFrame([{
-    "Station Group": g,
-    "Boards In": agg[g]['in'],
-    "Boards Out": agg[g]['out'],
-    "WIP": agg[g]['wip'],
-    "Number of Equipment": agg[g]['count'],
-    "Cycle Times (sec)": ", ".join(str(round(ct, 1)) for ct in agg[g]['cycle_times']),
-    "Utilization (%)": round((agg[g]['busy'] / (sim_time * agg[g]['count'])) * 100, 1) if agg[g]['count'] > 0 else 0
-} for g in groups])
+    env = simpy.Environment()
+    sim = FactorySimulation(env, valid_groups, sim_time, connections, from_stations, conveyor_flags, max_products_dict)
+    sim.run()
+    env.run(until=sim_time)
 
-st.dataframe(df, use_container_width=True)
+    st.success("✅ Simulation completed!")
 
-# Excel download
-towrite = BytesIO()
-df.to_excel(towrite, index=False, sheet_name="Summary")
-towrite.seek(0)
-st.download_button("📥 Download Summary Excel", data=towrite, file_name="factory_sim_summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.markdown("---")
+    st.subheader("📊 Simulation Results Summary")
+    groups = list(valid_groups.keys())
+    agg = defaultdict(lambda: {'in': 0, 'out': 0, 'busy': 0, 'count': 0, 'cycle_times': [], 'wip': 0})
+
+    for group in groups:
+        eqs = valid_groups[group]
+        for eq in eqs:
+            agg[group]['in'] += sim.throughput_in.get(eq, 0)
+            agg[group]['out'] += sim.throughput_out.get(eq, 0)
+            agg[group]['busy'] += sim.equipment_busy_time.get(eq, 0)
+            agg[group]['cycle_times'].append(sim.cycle_times.get(eq, 0))
+            agg[group]['count'] += 1
+        prev_out = sum(sim.throughput_out.get(eq, 0) for g in from_stations.get(group, []) for eq in valid_groups.get(g, []))
+        curr_in = agg[group]['in']
+        agg[group]['wip'] = max(0, prev_out - curr_in)
+
+    df = pd.DataFrame([{
+        "Station Group": g,
+        "Boards In": agg[g]['in'],
+        "Boards Out": agg[g]['out'],
+        "WIP": agg[g]['wip'],
+        "Number of Equipment": agg[g]['count'],
+        "Cycle Times (sec)": ", ".join(str(round(ct, 1)) for ct in agg[g]['cycle_times']),
+        "Utilization (%)": round((agg[g]['busy'] / (sim_time * agg[g]['count'])) * 100, 1) if agg[g]['count'] > 0 else 0
+    } for g in groups])
+
+    st.dataframe(df)
+
+    # Plot WIP over time
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    for group in groups:
+        ax.plot(sim.time_points, sim.wip_over_time[group], label=group)
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("WIP (Boards in Buffer)")
+    ax.legend()
+    st.pyplot(fig)
+
+    # CSV export
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button(label="Download Results CSV", data=csv, file_name="factory_sim_results.csv", mime="text/csv")
