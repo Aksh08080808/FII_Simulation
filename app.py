@@ -231,15 +231,55 @@ if 'valid_groups' not in locals() or 'sim' not in locals() or 'from_stations' no
     st.warning("❗ Run the simulation first to generate results.")
     st.stop()
 
-# === Results Summary ===
-st.markdown("---")
-st.subheader("Simulation Completed")
+import pandas as pd
+from io import BytesIO
+from collections import defaultdict
 
-for group in valid_groups:
-    st.write(f"**Group: {group}**")
-    st.write(f"Boards processed: {sum(sim.throughput_out[eq] for eq in valid_groups[group])}")
-    conveyor = conveyor_flags.get(group, False)
-    st.write(f"Behaves like conveyor: {conveyor}")
-    if conveyor:
-        st.write(f"Board limit: {st.session_state.board_limits[group]}")
-        st.write(f"
+st.subheader("📊 Simulation Results Summary")
+
+groups = list(valid_groups.keys())
+agg = defaultdict(lambda: {'in': 0, 'out': 0, 'busy': 0, 'count': 0, 'cycle_times': [], 'wip': 0})
+
+for group in groups:
+    eqs = valid_groups[group]
+    for eq in eqs:
+        agg[group]['in'] += sim.throughput_in.get(eq, 0)
+        agg[group]['out'] += sim.throughput_out.get(eq, 0)
+        agg[group]['busy'] += sim.equipment_busy_time.get(eq, 0)
+        agg[group]['cycle_times'].append(sim.cycle_times.get(eq, 0))
+        agg[group]['count'] += 1
+    
+    prev_out = sum(
+        sim.throughput_out.get(eq, 0)
+        for g in from_stations.get(group, [])
+        for eq in valid_groups.get(g, [])
+    )
+    curr_in = agg[group]['in']
+    agg[group]['wip'] = max(0, prev_out - curr_in)
+
+# Prepare DataFrame
+df = pd.DataFrame([
+    {
+        "Station Group": g,
+        "Boards In": agg[g]['in'],
+        "Boards Out": agg[g]['out'],
+        "WIP": agg[g]['wip'],
+        "Number of Equipment": agg[g]['count'],
+        "Cycle Times (sec)": ", ".join(str(round(ct, 1)) for ct in agg[g]['cycle_times']),
+        "Utilization (%)": round((agg[g]['busy'] / (sim_time * agg[g]['count'])) * 100, 1) if agg[g]['count'] > 0 else 0
+    }
+    for g in groups
+])
+
+st.dataframe(df, use_container_width=True)
+
+# Provide Excel download
+towrite = BytesIO()
+df.to_excel(towrite, index=False, sheet_name="Summary")
+towrite.seek(0)
+st.download_button(
+    "📥 Download Summary Excel",
+    data=towrite,
+    file_name="simulation_summary.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
