@@ -46,13 +46,13 @@ with col1:
             )
             max_products_dict[group_name] = max_products
 
+            # Remove equipment name input, use default naming convention
             equipment = {}
             for j in range(int(num_eq)):
-                default_eq_name = f"{group_name}_EQ_{j+1}" if group_name else f"EQ_{j+1}"
-                eq_name = st.text_input(f"Equipment {j+1} name in {group_name}", value=default_eq_name, key=f"eq_{i}_{j}")
+                eq_name = f"{group_name}_EQ_{j+1}" if group_name else f"EQ_{j+1}"
                 cycle_time = st.number_input(f"Cycle time (sec) for {eq_name}", min_value=1.0, value=5.0, step=1.0, key=f"ct_{i}_{j}")
-                if eq_name:
-                    equipment[eq_name] = cycle_time
+                equipment[eq_name] = cycle_time
+
             if group_name:
                 st.session_state.station_groups[group_name] = equipment
 
