@@ -28,22 +28,32 @@ with col1:
     max_products_dict = {}
 
     for i in range(num_groups):
-        with st.expander(f"Group {i+1} Configuration"):
-            group_name = st.text_input(f"Enter group name for Group {i+1}", key=f"group_name_{i}")
-            st.session_state.group_names[i] = group_name
-            num_eq = st.number_input(f"How many equipment in {group_name}?", min_value=1, value=2, key=f"num_eq_{i}")
-            behave_like_conveyor = st.checkbox("Behave like Conveyor", key=f"conveyor_{i}")
-            conveyor_flags[group_name] = behave_like_conveyor
-            max_products = st.number_input("Maximum Products in Station (∞ = very large number)", value=float('inf'), key=f"max_products_{i}")
-            max_products_dict[group_name] = max_products
-            equipment = {}
-            for j in range(int(num_eq)):
-                eq_name = st.text_input(f"Equipment {j+1} name in {group_name}", key=f"eq_{i}_{j}")
-                cycle_time = st.number_input(f"Cycle time (sec) for {eq_name}", min_value=1.0, value=5.0, step=1.0, key=f"ct_{i}_{j}")
-                if eq_name:
-                    equipment[eq_name] = cycle_time
-            if group_name:
-                st.session_state.station_groups[group_name] = equipment
+    with st.expander(f"Group {i+1} Configuration"):
+        group_name = st.text_input(f"Enter group name for Group {i+1}", key=f"group_name_{i}")
+        st.session_state.group_names[i] = group_name
+        num_eq = st.number_input(f"How many equipment in {group_name}?", min_value=1, value=2, key=f"num_eq_{i}")
+        behave_like_conveyor = st.checkbox("Behave like Conveyor", key=f"conveyor_{i}")
+        conveyor_flags[group_name] = behave_like_conveyor
+        
+        max_products = st.number_input(
+            "Maximum Products in Station (use a very large number to simulate ∞)",
+            min_value=1,
+            value=1,                  # default changed to 1
+            max_value=1_000_000_000,  # large max to simulate infinity
+            step=1,
+            key=f"max_products_{i}"
+        )
+        max_products_dict[group_name] = max_products
+        
+        equipment = {}
+        for j in range(int(num_eq)):
+            eq_name = st.text_input(f"Equipment {j+1} name in {group_name}", key=f"eq_{i}_{j}")
+            cycle_time = st.number_input(f"Cycle time (sec) for {eq_name}", min_value=1.0, value=5.0, step=1.0, key=f"ct_{i}_{j}")
+            if eq_name:
+                equipment[eq_name] = cycle_time
+        if group_name:
+            st.session_state.station_groups[group_name] = equipment
+
 
 # === Step 2: Connections ===
 with col2:
