@@ -198,4 +198,4 @@ st.dataframe(df, use_container_width=True)
 towrite = BytesIO()
 df.to_excel(towrite, index=False, sheet_name="Summary")
 towrite.seek(0)
-st.download_button("📥 Download Summary Excel", data
+st.download_button("📥 Download Summary Excel", data=towrite, file_name="factory_sim_summary.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
