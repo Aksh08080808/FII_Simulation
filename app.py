@@ -66,83 +66,74 @@ if st.session_state.get("simulate"):
     valid_groups = {g: eqs for g, eqs in station_groups.items() if g}
 
     class FactorySimulation:
-        def __init__(self, env, station_groups, duration, connections, from_stations, conveyor_groups):
-            self.env = env
-            self.station_groups = station_groups
-            self.duration = duration
-            self.connections = connections
-            self.from_stations = from_stations
-            self.conveyor_groups = conveyor_groups
-            self.buffers = defaultdict(lambda: simpy.Store(env))
-            self.resources = {eq: simpy.Resource(env, capacity=1)
-                              for group in station_groups.values() for eq in group}
-            self.cycle_times = {eq: ct for group in station_groups.values() for eq, ct in group.items()}
-            self.equipment_to_group = {eq: group for group, eqs in station_groups.items() for eq in eqs}
-            self.throughput_in = defaultdict(int)
-            self.throughput_out = defaultdict(int)
-            self.equipment_busy_time = defaultdict(float)
-            self.wip_over_time = defaultdict(list)
-            self.time_points = []
-            self.board_id = 1
-            self.wip_interval = 5
-            env.process(self.track_wip())
+    def __init__(self, env, station_groups, duration, connections, from_stations, conveyor_groups):
+        self.env = env
+        self.station_groups = station_groups
+        self.duration = duration
+        self.connections = connections
+        self.from_stations = from_stations
+        self.conveyor_groups = conveyor_groups
+        self.buffers = defaultdict(lambda: simpy.Store(env))
+        
+        # For non-conveyor groups, create a single resource with capacity=1 per group
+        self.group_resources = {
+            group: simpy.Resource(env, capacity=1) 
+            for group in station_groups if group not in conveyor_groups
+        }
+        
+        # Cycle times per equipment
+        self.cycle_times = {eq: ct for group in station_groups.values() for eq, ct in group.items()}
+        self.equipment_to_group = {eq: group for group, eqs in station_groups.items() for eq in eqs}
+        
+        self.throughput_in = defaultdict(int)
+        self.throughput_out = defaultdict(int)
+        self.equipment_busy_time = defaultdict(float)
+        self.wip_over_time = defaultdict(list)
+        self.time_points = []
+        self.board_id = 1
+        self.wip_interval = 5
+        env.process(self.track_wip())
 
-        def equipment_worker(self, eq):
-            group = self.equipment_to_group[eq]
+    def conveyor_worker(self, eq):
+        group = self.equipment_to_group[eq]
+        while True:
+            board = yield self.buffers[group].get()
+            self.throughput_in[eq] += 1
+            yield self.env.timeout(self.cycle_times[eq])
+            self.throughput_out[eq] += 1
+            self.equipment_busy_time[eq] += self.cycle_times[eq]
+            for tgt in self.connections.get(group, []):
+                yield self.buffers[tgt].put(board)
+
+    def non_conveyor_worker(self, group):
+        resource = self.group_resources[group]
+        # Choose a representative cycle time (e.g., average)
+        cycle_times = list(self.station_groups[group].values())
+        avg_cycle_time = sum(cycle_times) / len(cycle_times) if cycle_times else 1
+        while True:
+            board = yield self.buffers[group].get()
+            with resource.request() as req:
+                yield req
+                self.throughput_in[group] += 1
+                start = self.env.now
+                yield self.env.timeout(avg_cycle_time)
+                end = self.env.now
+                self.equipment_busy_time[group] += (end - start)
+                self.throughput_out[group] += 1
+            for tgt in self.connections.get(group, []):
+                yield self.buffers[tgt].put(board)
+
+    def run(self):
+        # For conveyor groups: one worker per equipment
+        for group in self.station_groups:
             if group in self.conveyor_groups:
-                while True:
-                    board = yield self.buffers[group].get()
-                    self.throughput_in[eq] += 1
-                    yield self.env.timeout(self.cycle_times[eq])
-                    self.throughput_out[eq] += 1
-                    self.equipment_busy_time[eq] += self.cycle_times[eq]
-                    for tgt in self.connections.get(group, []):
-                        yield self.buffers[tgt].put(board)
-            else:
-                while True:
-                    board = yield self.buffers[group].get()
-                    self.throughput_in[eq] += 1
-                    with self.resources[eq].request() as req:
-                        yield req
-                        start = self.env.now
-                        yield self.env.timeout(self.cycle_times[eq])
-                        end = self.env.now
-                        self.equipment_busy_time[eq] += (end - start)
-                    self.throughput_out[eq] += 1
-                    for tgt in self.connections.get(group, []):
-                        yield self.buffers[tgt].put(board)
-
-        def feeder(self):
-            start_groups = [g for g in self.station_groups if not self.from_stations.get(g)]
-            while self.env.now < self.duration:
-                for g in start_groups:
-                    board = f"Board-{self.board_id:03d}"
-                    self.board_id += 1
-                    yield self.buffers[g].put(board)
-                yield self.env.timeout(1)
-
-        def track_wip(self):
-            while self.env.now < self.duration:
-                self.time_points.append(self.env.now)
-                for group in self.station_groups:
-                    if group in self.conveyor_groups:
-                        wip = len(self.buffers[group].items)
-                    else:
-                        prev_out = sum(
-                            self.throughput_out[eq]
-                            for g in self.from_stations.get(group, [])
-                            for eq in self.station_groups.get(g, [])
-                        )
-                        curr_in = sum(self.throughput_in[eq] for eq in self.station_groups[group])
-                        wip = max(0, prev_out - curr_in) if self.from_stations.get(group) else 0
-                    self.wip_over_time[group].append(wip)
-                yield self.env.timeout(self.wip_interval)
-
-        def run(self):
-            for group in self.station_groups:
                 for eq in self.station_groups[group]:
-                    self.env.process(self.equipment_worker(eq))
-            self.env.process(self.feeder())
+                    self.env.process(self.conveyor_worker(eq))
+            else:
+                # For non-conveyor groups: only one worker per group
+                self.env.process(self.non_conveyor_worker(group))
+        self.env.process(self.feeder())
+
 
     env = simpy.Environment()
     sim = FactorySimulation(env, valid_groups, sim_time, connections, from_stations, conveyor_groups)
